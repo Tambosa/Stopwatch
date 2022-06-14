@@ -1,43 +1,59 @@
 package com.gb.stopwatch.ui.viewmodel
 
+import com.gb.stopwatch.domain.model.Stopwatch
+import com.gb.stopwatch.domain.model.StopwatchState
+import com.gb.stopwatch.domain.repository.StopWatchStateHolderFactory
 import com.gb.stopwatch.domain.repository.StopwatchStateHolder
-import com.gb.stopwatch.domain.utils.TimestampMillisecondsFormatter
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import java.util.concurrent.ConcurrentHashMap
 
 class StopwatchListOrchestrator(
-    private val stopwatchStateHolder: StopwatchStateHolder,
+    private val stopWatchStateHolderFactory: StopWatchStateHolderFactory,
     private val scope: CoroutineScope,
 ) {
 
     private var job: Job? = null
-    private val mutableTicker = MutableStateFlow("")
-    val ticker: StateFlow<String> = mutableTicker
+    private var stateHolders = ConcurrentHashMap<Stopwatch, StopwatchStateHolder>()
+    private val mutableTicker = MutableStateFlow<Map<Stopwatch, String>>(mapOf())
+    val ticker: StateFlow<Map<Stopwatch, String>> = mutableTicker
 
-    fun start() {
+    fun start(stopwatch: Stopwatch) {
         if (job == null) startJob()
-        stopwatchStateHolder.start()
+        stateHolders
+            .getOrPut(stopwatch) { stopWatchStateHolderFactory.create() }
+            .start()
     }
 
     private fun startJob() {
-        scope.launch {
+        job = scope.launch {
             while (isActive) {
-                mutableTicker.value = stopwatchStateHolder.getStringTimeRepresentation()
+                val newValues = stateHolders
+                    .toSortedMap(compareBy { stopwatch -> stopwatch.id })
+                    .map { (stopwatch, stateHolder) ->
+                        stopwatch to stateHolder.getStringTimeRepresentation()
+                    }
+                    .toMap()
+                mutableTicker.value = newValues
                 delay(20)
             }
         }
     }
 
-    fun pause() {
-        stopwatchStateHolder.pause()
-        stopJob()
+    fun pause(stopwatch: Stopwatch) {
+        stateHolders[stopwatch]?.pause()
+        if (stateHolders.values.all { stateHolder -> stateHolder.currentState is StopwatchState.Paused }) {
+            stopJob()
+        }
     }
 
-    fun stop() {
-        stopwatchStateHolder.stop()
-        stopJob()
+    fun stop(stopwatch: Stopwatch) {
+        stateHolders.remove(stopwatch)
         clearValue()
+        if (stateHolders.isEmpty()) {
+            stopJob()
+        }
     }
 
     private fun stopJob() {
@@ -46,6 +62,12 @@ class StopwatchListOrchestrator(
     }
 
     private fun clearValue() {
-        mutableTicker.value = TimestampMillisecondsFormatter.DEFAULT_TIME
+        val newValues = stateHolders
+            .toSortedMap(compareBy { stopwatch -> stopwatch.id })
+            .map { (stopwatch, stateHolder) ->
+                stopwatch to stateHolder.getStringTimeRepresentation()
+            }
+            .toMap()
+        mutableTicker.value = newValues
     }
 }
